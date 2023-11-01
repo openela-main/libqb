@@ -1,0 +1,172 @@
+diff -urp libqb-1.0.3.orig/lib/ipc_shm.c libqb-1.0.3/lib/ipc_shm.c
+--- libqb-1.0.3.orig/lib/ipc_shm.c	2020-05-20 09:00:31.826899188 +0100
++++ libqb-1.0.3/lib/ipc_shm.c	2020-05-20 09:11:56.607788472 +0100
+@@ -282,6 +282,8 @@ qb_ipcs_shm_connect(struct qb_ipcs_servi
+ 		    struct qb_ipc_connection_response *r)
+ {
+ 	int32_t res;
++	char dirname[PATH_MAX];
++	char *slash;
+ 
+ 	qb_util_log(LOG_DEBUG, "connecting to client [%d]", c->pid);
+ 
+@@ -292,6 +294,14 @@ qb_ipcs_shm_connect(struct qb_ipcs_servi
+ 	snprintf(r->event, NAME_MAX, "%s-event-%s",
+ 		 c->description, s->name);
+ 
++	/* Set correct ownership if qb_ipcs_connection_auth_set() has been used */
++	strlcpy(dirname, c->description, sizeof(dirname));
++	slash = strrchr(dirname, '/');
++	if (slash) {
++		*slash = '\0';
++		(void)chown(dirname, c->auth.uid, c->auth.gid);
++	}
++
+ 	res = qb_ipcs_shm_rb_open(c, &c->request,
+ 				  r->request);
+ 	if (res != 0) {
+diff -urp libqb-1.0.3.orig/tests/check_ipc.c libqb-1.0.3/tests/check_ipc.c
+--- libqb-1.0.3.orig/tests/check_ipc.c	2017-12-21 09:02:11.000000000 +0000
++++ libqb-1.0.3/tests/check_ipc.c	2020-05-20 09:07:55.607104804 +0100
+@@ -98,6 +98,8 @@ enum my_msg_ids {
+  * 7) service availability
+  *
+  * 8) multiple services
++ *
++ * 9) setting perms on the sockets
+  */
+ static qb_loop_t *my_loop;
+ static qb_ipcs_service_t* s1;
+@@ -109,6 +111,7 @@ static int32_t num_bulk_events = 10;
+ static int32_t num_stress_events = 30000;
+ static int32_t reference_count_test = QB_FALSE;
+ static int32_t multiple_connections = QB_FALSE;
++static int32_t set_perms_on_socket = QB_FALSE;
+ 
+ 
+ static int32_t
+@@ -360,6 +363,16 @@ s1_connection_destroyed(qb_ipcs_connecti
+ 	qb_leave();
+ }
+ 
++static int32_t
++s1_connection_accept(qb_ipcs_connection_t *c, uid_t uid, gid_t gid)
++{
++	if (set_perms_on_socket) {
++		qb_ipcs_connection_auth_set(c, 555, 741, S_IRWXU|S_IRWXG|S_IROTH|S_IWOTH);
++	}
++	return 0;
++}
++
++
+ static void
+ s1_connection_created(qb_ipcs_connection_t *c)
+ {
+@@ -402,7 +415,7 @@ run_ipc_server(void)
+ 	qb_loop_signal_handle handle;
+ 
+ 	struct qb_ipcs_service_handlers sh = {
+-		.connection_accept = NULL,
++		.connection_accept = s1_connection_accept,
+ 		.connection_created = s1_connection_created,
+ 		.msg_process = s1_msg_process_fn,
+ 		.connection_destroyed = s1_connection_destroyed,
+@@ -517,7 +530,7 @@ verify_graceful_stop(pid_t pid)
+ 	} else {
+ 		fail_if(rc == 0);
+ 	}
+-	
++
+ 	return 0;
+ }
+ 
+@@ -1018,7 +1031,7 @@ test_ipc_stress_connections(void)
+ 			}
+ 		} while (conn == NULL && c < 5);
+ 		fail_if(conn == NULL);
+-		
++
+ 		if (((connections+1) % 1000) == 0) {
+ 			qb_log(LOG_INFO, "%d ipc connections made", connections+1);
+ 		}
+@@ -1448,6 +1461,63 @@ START_TEST(test_ipcc_truncate_when_unlin
+ END_TEST
+ #endif
+ 
++// Check perms uses illegal access to libqb internals
++// DO NOT try this at home.
++#include "../lib/ipc_int.h"
++#include "../lib/ringbuffer_int.h"
++START_TEST(test_ipc_server_perms)
++{
++	pid_t pid;
++	struct stat st;
++	int j;
++	uint32_t max_size;
++	int res;
++	int c = 0;
++
++	// Can only test this if we are root
++	if (getuid() != 0) {
++		return;
++	}
++
++	ipc_type = QB_IPC_SHM;
++	set_perms_on_socket = QB_TRUE;
++	max_size = MAX_MSG_SIZE;
++
++	pid = run_function_in_new_process(run_ipc_server);
++	fail_if(pid == -1);
++
++	do {
++		conn = qb_ipcc_connect(ipc_name, max_size);
++		if (conn == NULL) {
++			j = waitpid(pid, NULL, WNOHANG);
++			ck_assert_int_eq(j, 0);
++			poll(NULL, 0, 400);
++			c++;
++		}
++	} while (conn == NULL && c < 5);
++	fail_if(conn == NULL);
++
++	// Check perms - uses illegal access to libqb internals
++	char sockdir[PATH_MAX];
++	strcpy(sockdir, conn->request.u.shm.rb->shared_hdr->hdr_path);
++	*strrchr(sockdir, '/') = 0;
++	res = stat(sockdir, &st);
++
++	ck_assert_int_eq(res, 0);
++	ck_assert(st.st_mode & S_IRWXG);
++	ck_assert_int_eq(st.st_uid, 555);
++	ck_assert_int_eq(st.st_gid, 741);
++
++	res = stat(conn->request.u.shm.rb->shared_hdr->hdr_path, &st);
++	ck_assert_int_eq(res, 0);
++	ck_assert_int_eq(st.st_uid, 555);
++	ck_assert_int_eq(st.st_gid, 741);
++
++	qb_ipcc_disconnect(conn);
++	verify_graceful_stop(pid);
++}
++END_TEST
++
+ static void
+ test_ipc_service_ref_count(void)
+ {
+@@ -1502,7 +1572,7 @@ END_TEST
+ #if 0
+ static void test_max_dgram_size(void)
+ {
+-	/* most implementations will not let you set a dgram buffer 
++	/* most implementations will not let you set a dgram buffer
+ 	 * of 1 million bytes. This test verifies that the we can detect
+ 	 * the max dgram buffersize regardless, and that the value we detect
+ 	 * is consistent. */
+@@ -1562,6 +1632,7 @@ make_shm_suite(void)
+ 	add_tcase(s, tc, test_ipc_exit_shm, 8);
+ 	add_tcase(s, tc, test_ipc_event_on_created_shm, 10);
+ 	add_tcase(s, tc, test_ipc_service_ref_count_shm, 10);
++	add_tcase(s, tc, test_ipc_server_perms, 7);
+ 	add_tcase(s, tc, test_ipc_stress_connections_shm, 3600);
+ 
+ #ifdef HAVE_FAILURE_INJECTION

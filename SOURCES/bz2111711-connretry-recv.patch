@@ -1,0 +1,25 @@
+diff --git a/lib/ipc_setup.c b/lib/ipc_setup.c
+index 23eeabb..0a720c8 100644
+--- a/lib/ipc_setup.c
++++ b/lib/ipc_setup.c
+@@ -447,6 +447,7 @@ qb_ipcc_us_setup_connect(struct qb_ipcc_connection *c,
+ 	int32_t res;
+ 	struct qb_ipc_connection_request request;
+ 	struct ipc_auth_data *data;
++	int retry_count = 0;
+ #ifdef QB_LINUX
+ 	int off = 0;
+ 	int on = 1;
+@@ -478,7 +479,12 @@ qb_ipcc_us_setup_connect(struct qb_ipcc_connection *c,
+ 	}
+ 
+ 	qb_ipc_us_ready(&c->setup, NULL, -1, POLLIN);
++retry:
+ 	res = qb_ipc_us_recv_msghdr(data);
++	if (res == -EAGAIN && ++retry_count < 10) {
++		usleep(100000);
++		goto retry;
++	}
+ 
+ #ifdef QB_LINUX
+ 	setsockopt(c->setup.u.us.sock, SOL_SOCKET, SO_PASSCRED, &off,

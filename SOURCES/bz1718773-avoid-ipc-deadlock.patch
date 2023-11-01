@@ -1,0 +1,23 @@
+diff --git a/lib/ipc_setup.c b/lib/ipc_setup.c
+index 43dc3e7..b3f3412 100644
+--- a/lib/ipc_setup.c
++++ b/lib/ipc_setup.c
+@@ -843,12 +843,13 @@ qb_ipcs_uc_recv_and_auth(int32_t sock, struct qb_ipcs_service *s)
+ 	setsockopt(sock, SOL_SOCKET, SO_PASSCRED, &on, sizeof(on));
+ #endif
+ 
+-	res = s->poll_fns.dispatch_add(QB_LOOP_MED,
+-					data->sock,
+-					POLLIN | POLLPRI | POLLNVAL,
+-					data, process_auth);
++	res = s->poll_fns.dispatch_add(s->poll_priority,
++	                               data->sock,
++	                               POLLIN | POLLPRI | POLLNVAL,
++	                               data, process_auth);
+ 	if (res < 0) {
+-		qb_util_log(LOG_DEBUG, "Failed to process AUTH for fd (%d)", data->sock);
++		qb_util_log(LOG_DEBUG, "Failed to arrange for AUTH for fd (%d)",
++		            data->sock);
+ 		close(sock);
+ 		destroy_ipc_auth_data(data);
+ 	}

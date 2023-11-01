@@ -1,0 +1,238 @@
+diff -rup libqb-1.0.3.orig/lib/ipc_int.h libqb-1.0.3/lib/ipc_int.h
+--- libqb-1.0.3.orig/lib/ipc_int.h	2017-11-17 13:31:14.000000000 +0000
++++ libqb-1.0.3/lib/ipc_int.h	2019-05-30 14:51:44.758129831 +0100
+@@ -160,7 +160,7 @@ enum qb_ipcs_connection_state {
+ 	QB_IPCS_CONNECTION_SHUTTING_DOWN,
+ };
+ 
+-#define CONNECTION_DESCRIPTION (34) /* INT_MAX length + 3 */
++#define CONNECTION_DESCRIPTION NAME_MAX
+ 
+ struct qb_ipcs_connection_auth {
+ 	uid_t uid;
+@@ -207,4 +207,6 @@ int32_t qb_ipc_us_sock_error_is_disconne
+ 
+ int use_filesystem_sockets(void);
+ 
++void remove_tempdir(const char *name);
++
+ #endif /* QB_IPC_INT_H_DEFINED */
+Only in libqb-1.0.3/lib: ipc_int.h.orig
+diff -rup libqb-1.0.3.orig/lib/ipcs.c libqb-1.0.3/lib/ipcs.c
+--- libqb-1.0.3.orig/lib/ipcs.c	2017-11-17 13:31:14.000000000 +0000
++++ libqb-1.0.3/lib/ipcs.c	2019-05-30 14:51:44.759129833 +0100
+@@ -642,12 +642,13 @@ qb_ipcs_disconnect(struct qb_ipcs_connec
+ 				scheduled_retry = 1;
+ 			}
+ 		}
+-
++		remove_tempdir(c->description);
+ 		if (scheduled_retry == 0) {
+ 			/* This removes the initial alloc ref */
+ 			qb_ipcs_connection_unref(c);
+ 		}
+ 	}
++
+ }
+ 
+ static void
+diff -rup libqb-1.0.3.orig/lib/ipc_setup.c libqb-1.0.3/lib/ipc_setup.c
+--- libqb-1.0.3.orig/lib/ipc_setup.c	2017-11-17 13:31:14.000000000 +0000
++++ libqb-1.0.3/lib/ipc_setup.c	2019-05-30 14:51:44.759129833 +0100
+@@ -620,6 +620,8 @@ handle_new_connection(struct qb_ipcs_ser
+ 	int32_t res2 = 0;
+ 	uint32_t max_buffer_size = QB_MAX(req->max_msg_size, s->max_buffer_size);
+ 	struct qb_ipc_connection_response response;
++	const char suffix[] = "/qb";
++	int desc_len;
+ 
+ 	c = qb_ipcs_connection_alloc(s);
+ 	if (c == NULL) {
+@@ -642,8 +644,45 @@ handle_new_connection(struct qb_ipcs_ser
+ 	c->auth.gid = c->egid = ugp->gid;
+ 	c->auth.mode = 0600;
+ 	c->stats.client_pid = ugp->pid;
+-	snprintf(c->description, CONNECTION_DESCRIPTION,
+-		 "%d-%d-%d", s->pid, ugp->pid, c->setup.u.us.sock);
++
++#if defined(QB_LINUX) || defined(QB_CYGWIN)
++	desc_len = snprintf(c->description, CONNECTION_DESCRIPTION - sizeof suffix,
++			    "/dev/shm/qb-%d-%d-%d-XXXXXX", s->pid, ugp->pid, c->setup.u.us.sock);
++	if (desc_len < 0) {
++		res = -errno;
++		goto send_response;
++	}
++	if (desc_len >= CONNECTION_DESCRIPTION - sizeof suffix) {
++		res = -ENAMETOOLONG;
++		goto send_response;
++	}
++	if (mkdtemp(c->description) == NULL) {
++		res = -errno;
++		goto send_response;
++	}
++	if (chmod(c->description, 0770)) {
++		res = -errno;
++		goto send_response;
++	}
++	/* chown can fail because we might not be root */
++	(void)chown(c->description, c->auth.uid, c->auth.gid);
++
++	/* We can't pass just a directory spec to the clients */
++	memcpy(c->description + desc_len, suffix, sizeof suffix);
++#else
++	desc_len = snprintf(c->description, CONNECTION_DESCRIPTION,
++			    "%d-%d-%d", s->pid, ugp->pid, c->setup.u.us.sock);
++	if (desc_len < 0) {
++		res = -errno;
++		goto send_response;
++	}
++	if (desc_len >= CONNECTION_DESCRIPTION) {
++		res = -ENAMETOOLONG;
++		goto send_response;
++	}
++#endif
++
++
+ 
+ 	if (auth_result == 0 && c->service->serv_fns.connection_accept) {
+ 		res = c->service->serv_fns.connection_accept(c,
+@@ -864,3 +903,21 @@ retry_accept:
+ 	qb_ipcs_uc_recv_and_auth(new_fd, s);
+ 	return 0;
+ }
++
++void remove_tempdir(const char *name)
++{
++#if defined(QB_LINUX) || defined(QB_CYGWIN)
++	char dirname[PATH_MAX];
++	char *slash = strrchr(name, '/');
++
++	if (slash && slash - name < sizeof dirname) {
++		memcpy(dirname, name, slash - name);
++		dirname[slash - name] = '\0';
++		/* This gets called more than it needs to be really, so we don't check
++		 * the return code. It's more of a desperate attempt to clean up after ourself
++		 * in either the server or client.
++		 */
++		(void)rmdir(dirname);
++	}
++#endif
++}
+Only in libqb-1.0.3/lib: ipc_setup.c.orig
+diff -rup libqb-1.0.3.orig/lib/ipc_shm.c libqb-1.0.3/lib/ipc_shm.c
+--- libqb-1.0.3.orig/lib/ipc_shm.c	2017-11-17 13:31:14.000000000 +0000
++++ libqb-1.0.3/lib/ipc_shm.c	2019-05-30 14:58:42.582211045 +0100
+@@ -239,6 +239,7 @@ qb_ipcs_shm_disconnect(struct qb_ipcs_co
+ 			qb_rb_close(qb_rb_lastref_and_ret(&c->request.u.shm.rb));
+ 		}
+ 	}
++	remove_tempdir(c->description);
+ }
+ 
+ static int32_t
+@@ -285,11 +286,11 @@ qb_ipcs_shm_connect(struct qb_ipcs_servi
+ 	qb_util_log(LOG_DEBUG, "connecting to client [%d]", c->pid);
+ 
+ 	snprintf(r->request, NAME_MAX, "%s-request-%s",
+-		 s->name, c->description);
++		 c->description, s->name);
+ 	snprintf(r->response, NAME_MAX, "%s-response-%s",
+-		 s->name, c->description);
++		 c->description, s->name);
+ 	snprintf(r->event, NAME_MAX, "%s-event-%s",
+-		 s->name, c->description);
++		 c->description, s->name);
+ 
+ 	res = qb_ipcs_shm_rb_open(c, &c->request,
+ 				  r->request);
+Only in libqb-1.0.3/lib: ipc_shm.c~
+Only in libqb-1.0.3/lib: ipc_shm.c.orig
+Only in libqb-1.0.3/lib: ipc_shm.c.rej
+diff -rup libqb-1.0.3.orig/lib/ipc_socket.c libqb-1.0.3/lib/ipc_socket.c
+--- libqb-1.0.3.orig/lib/ipc_socket.c	2017-11-17 13:31:14.000000000 +0000
++++ libqb-1.0.3/lib/ipc_socket.c	2019-05-30 14:51:44.761129838 +0100
+@@ -374,6 +374,10 @@ qb_ipcc_us_disconnect(struct qb_ipcc_con
+ 			free(base_name);
+ 		}
+ 	}
++
++	/* Last-ditch attempt to tidy up after ourself */
++	remove_tempdir(c->request.u.us.shared_file_name);
++
+ 	qb_ipcc_us_sock_close(c->event.u.us.sock);
+ 	qb_ipcc_us_sock_close(c->request.u.us.sock);
+ 	qb_ipcc_us_sock_close(c->setup.u.us.sock);
+@@ -765,7 +769,10 @@ qb_ipcs_us_disconnect(struct qb_ipcs_con
+ 	    c->state == QB_IPCS_CONNECTION_ACTIVE) {
+ 		munmap(c->request.u.us.shared_data, SHM_CONTROL_SIZE);
+ 		unlink(c->request.u.us.shared_file_name);
++
++
+ 	}
++	remove_tempdir(c->description);
+ }
+ 
+ static int32_t
+@@ -784,13 +791,13 @@ qb_ipcs_us_connect(struct qb_ipcs_servic
+ 	c->request.u.us.sock = c->setup.u.us.sock;
+ 	c->response.u.us.sock = c->setup.u.us.sock;
+ 
+-	snprintf(r->request, NAME_MAX, "qb-%s-control-%s",
+-		 s->name, c->description);
+-	snprintf(r->response, NAME_MAX, "qb-%s-%s", s->name, c->description);
++	snprintf(r->request, NAME_MAX, "%s-control-%s",
++		 c->description, s->name);
++	snprintf(r->response, NAME_MAX, "%s-%s", c->description, s->name);
+ 
+ 	fd_hdr = qb_sys_mmap_file_open(path, r->request,
+ 				       SHM_CONTROL_SIZE,
+-				       O_CREAT | O_TRUNC | O_RDWR);
++				       O_CREAT | O_TRUNC | O_RDWR | O_EXCL);
+ 	if (fd_hdr < 0) {
+ 		res = fd_hdr;
+ 		errno = -fd_hdr;
+Only in libqb-1.0.3/lib: ipc_socket.c.orig
+diff -rup libqb-1.0.3.orig/lib/ringbuffer.c libqb-1.0.3/lib/ringbuffer.c
+--- libqb-1.0.3.orig/lib/ringbuffer.c	2017-12-21 09:02:11.000000000 +0000
++++ libqb-1.0.3/lib/ringbuffer.c	2019-05-30 14:51:44.761129838 +0100
+@@ -155,7 +155,7 @@ qb_rb_open_2(const char *name, size_t si
+ 	    sizeof(struct qb_ringbuffer_shared_s) + shared_user_data_size;
+ 
+ 	if (flags & QB_RB_FLAG_CREATE) {
+-		file_flags |= O_CREAT | O_TRUNC;
++		file_flags |= O_CREAT | O_TRUNC | O_EXCL;
+ 	}
+ 
+ 	rb = calloc(1, sizeof(struct qb_ringbuffer_s));
+@@ -166,7 +166,7 @@ qb_rb_open_2(const char *name, size_t si
+ 	/*
+ 	 * Create a shared_hdr memory segment for the header.
+ 	 */
+-	snprintf(filename, PATH_MAX, "qb-%s-header", name);
++	snprintf(filename, PATH_MAX, "%s-header", name);
+ 	fd_hdr = qb_sys_mmap_file_open(path, filename,
+ 				       shared_size, file_flags);
+ 	if (fd_hdr < 0) {
+@@ -217,7 +217,7 @@ qb_rb_open_2(const char *name, size_t si
+ 	 * They have to be separate.
+ 	 */
+ 	if (flags & QB_RB_FLAG_CREATE) {
+-		snprintf(filename, PATH_MAX, "qb-%s-data", name);
++		snprintf(filename, PATH_MAX, "%s-data", name);
+ 		fd_data = qb_sys_mmap_file_open(path,
+ 						filename,
+ 						real_size, file_flags);
+diff -rup libqb-1.0.3.orig/lib/unix.c libqb-1.0.3/lib/unix.c
+--- libqb-1.0.3.orig/lib/unix.c	2017-11-17 13:31:14.000000000 +0000
++++ libqb-1.0.3/lib/unix.c	2019-05-30 14:51:44.761129838 +0100
+@@ -81,7 +81,9 @@ qb_sys_mmap_file_open(char *path, const
+ 		(void)strlcpy(path, file, PATH_MAX);
+ 	} else {
+ #if defined(QB_LINUX) || defined(QB_CYGWIN)
+-		snprintf(path, PATH_MAX, "/dev/shm/%s", file);
++		/* This is only now called when talking to an old libqb
++		   where we need to add qb- to the name */
++		snprintf(path, PATH_MAX, "/dev/shm/qb-%s", file);
+ #else
+ 		snprintf(path, PATH_MAX, "%s/%s", SOCKETDIR, file);
+ 		is_absolute = path;
