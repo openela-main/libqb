@@ -3,7 +3,7 @@
 
 Name:           libqb
 Version:        2.0.6
-Release:        2%{?dist}
+Release:        4%{?dist}
 Summary:        Library providing high performance logging, tracing, ipc, and poll
 
 License:        LGPLv2+
@@ -11,6 +11,7 @@ URL:            https://github.com/ClusterLabs/libqb
 Source0:        https://github.com/ClusterLabs/libqb/releases/download/v%{version}/%{name}-%{version}.tar.xz
 
 Patch0:         bz2149647-connretry-recv.patch
+Patch1:         bz2236171-fix-bb-overflow.patch
 
 BuildRequires:  autoconf automake libtool
 BuildRequires:  check-devel
@@ -31,8 +32,7 @@ architecture, such as logging, tracing, inter-process communication (IPC),
 and polling.
 
 %prep
-%setup -q -n %{name}-%{version}
-%patch0 -p1 -b .bz2149647-connretry-recv.patch
+%autosetup -p1
 
 %build
 ./autogen.sh
@@ -105,9 +105,17 @@ This package contains a program to create nicely-formatted man pages from Doxyge
 
 
 %changelog
-* Mon Dec 12 2022 Christine Caulfield <ccaulfie@redhat.com> 2.0.6-2
-  ipc: Retry receiving credentials if the the message is short
-  Resolves: rhbz#2151305
+* Fri Sep  8 2023 Christine Caulfield <ccaulfie@redhat.com> 2.0.6-4
+- bump rpm version for rhel-exception build
+  Resolves: rhbz#2230712
+
+* Fri Sep  1 2023 Christine Caulfield <ccaulfie@redhat.com> 2.0.6-3
+- blackbox: fix buffer overflow with long log lines
+  Resolves: rhbz#2236171
+
+* Thu Dec  1 2022 Christine Caulfield <ccaulfie@redhat.com> 2.0.6-1
+- ipc: Retry receiving credentials if the the message is short
+  Resolves: rhbz2149647
 
 * Wed Apr 20 2022 Christine Caulfield <ccaulfie@redhat.com> 2.0.6-1
 - Rebase to 2.0.6
