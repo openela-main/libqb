@@ -1,0 +1,32 @@
+commit bfa90160e5856cd91e7c3e58bfd50387a41b8ca9
+Author: Christine Caulfield <ccaulfie@redhat.com>
+Date:   Wed May 20 11:18:07 2020 +0100
+
+    Some bugs spotted by coverity
+
+diff --git a/include/tlist.h b/include/tlist.h
+index bcae55d..723d3ec 100644
+--- a/include/tlist.h
++++ b/include/tlist.h
+@@ -191,7 +191,7 @@ static inline void timerlist_expire(struct timerlist *timerlist)
+ 	uint64_t current_time;
+ 
+ 	current_monotonic_time = qb_util_nano_current_get();
+-	current_time_from_epoch = current_time = qb_util_nano_from_epoch_get();
++	current_time_from_epoch = qb_util_nano_from_epoch_get();
+ 
+ 	qb_list_for_each_safe(pos, next, &timerlist->timer_head) {
+ 
+diff --git a/lib/ringbuffer.c b/lib/ringbuffer.c
+index 3a0fb7e..cd5089a 100644
+--- a/lib/ringbuffer.c
++++ b/lib/ringbuffer.c
+@@ -266,7 +266,7 @@ cleanup_hdr:
+ 	if (fd_hdr >= 0) {
+ 		close(fd_hdr);
+ 	}
+-	if (rb && (flags & QB_RB_FLAG_CREATE)) {
++	if (rb && (rb->shared_hdr != MAP_FAILED) && (flags & QB_RB_FLAG_CREATE)) {
+ 		unlink(rb->shared_hdr->hdr_path);
+ 		if (rb->notifier.destroy_fn) {
+ 			(void)rb->notifier.destroy_fn(rb->notifier.instance);

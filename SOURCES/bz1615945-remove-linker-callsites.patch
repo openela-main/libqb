@@ -1,0 +1,521 @@
+diff -ur libqb-1.0.3/configure.ac libqb-1.0.3.nosection/configure.ac
+--- libqb-1.0.3/configure.ac	2017-12-21 09:02:11.000000000 +0000
++++ libqb-1.0.3.nosection/configure.ac	2018-08-16 10:24:25.425174367 +0100
+@@ -644,139 +644,6 @@
+ AM_CONDITIONAL(HAVE_SLOW_TESTS, [test "x${enable_slow_tests}" = xyes])
+ AC_SUBST(HAVE_SLOW_TESTS)
+ 
+-# --- callsite sections ---
+-if test "x${GCC}" = xyes; then
+-	AX_SAVE_FLAGS
+-	AC_MSG_CHECKING([whether GCC supports __attribute__((section()) + ld supports orphan sections])
+-	if test "x${ac_cv_link_attribute_section}" = x ; then
+-		LDFLAGS="${LDFLAGS_save} -shared -fPIC"  # we are compiling shared lib
+-		AC_LINK_IFELSE(
+-			[AC_LANG_SOURCE(
+-			    [[#include <assert.h>
+-			      extern int __start___verbose[], __stop___verbose[];
+-			      int test(void) {
+-			        static int my_var __attribute__((section("__verbose"))) = 3;
+-			        assert("L:non-empty data section"
+-			               && __start___verbose != __stop___verbose);
+-			        assert("L:no data section value loss"
+-			               && my_var == 3  /* for 2.29.1+ */);
+-			        return *((int *) __start___verbose); }]]
+-			)],
+-			[gcc_has_attribute_section=yes; cp "conftest${ac_exeext}" "conftest.so"],
+-			[gcc_has_attribute_section=no]
+-		)
+-		AX_RESTORE_FLAGS
+-	else
+-		gcc_has_attribute_section=${ac_cv_link_attribute_section}
+-	fi
+-	AC_MSG_RESULT($gcc_has_attribute_section)
+-
+-	# in the failing case (e.g. with ld from binutils 2.29), it's likely the
+-	# following will fail readily in linkage (hidden symbol `__stop___verbose'
+-	# in conftest is referenced by DSO), but keep the sensible test
+-	# (in-executable symbol is expected to be propagated into the library,
+-	# and to draw the full circle back to the executable through standard
+-	# return value passing (respectively no-exec probing to spot the issue);
+-	# -rpath passed because LD_LIBRARY_PATH exporting is unwieldy here);
+-	# moreover, "my_var" == 3 assertion above (respectively checking if the
+-	# boundary symbol visibility differs from DEFAULT in readelf output) is
+-	# necessary so that binutils 2.29.1+ will not slip other parts of the
+-	# overall is-workaround-needed harness, as it restored some (but not
+-	# all) of the original behaviour, but the workaround is still provably
+-	# needed
+-	if test "x${gcc_has_attribute_section}" = xyes; then
+-		AC_MSG_CHECKING([whether linker emits global boundary symbols for orphan sections])
+-		LIBS="${LIBS} -L. -l:conftest${shrext_cmds} -Wl,-rpath=$(pwd)"
+-		dnl could be turned to AC_TRY_RUN (first assertion is equivalent to
+-		dnl the further check in action-if-true), but that would prevent
+-		dnl cross-building
+-		AC_LINK_IFELSE(
+-			[AC_LANG_PROGRAM(
+-			    [[#include <assert.h>
+-			      extern int __start___verbose[], __stop___verbose[];
+-			      int test(void);]],
+-			    [[static int my_var __attribute__((section("__verbose"))) = 5;
+-			      assert("E:non-empty data section"
+-			             && __start___verbose != __stop___verbose);
+-			      assert("E:no data section value loss"
+-			             && my_var == test() /*5?*/);]]
+-			)],
+-			[# alternatively something like (but requires number parsing):
+-			 #   readelf -SW "conftest${ac_exeext}" \
+-			 #   | sed -n '/__verbose/s/^\s*//p' | tr -s ' ' | cut -d" " -f6
+-			 verbose_start_addr=$(${NM} -g --portability -- "conftest${ac_exeext}" \
+-			                      | grep __start___verbose | cut -d" " -f 3)
+-			 verbose_stop_addr=$(${NM} -g --portability -- "conftest${ac_exeext}" \
+-			                      | grep __stop___verbose | cut -d" " -f 3)
+-			 test "${verbose_start_addr}" = "${verbose_stop_addr}" \
+-			   && gcc_has_attribute_section_visible=no \
+-			   || { verbose_start_type=$(${READELF} -s backup \
+-			                             | sed -n '/__start___verbose/{s/^\s*//p;q}' \
+-			                             | tr -s ' ' \
+-			                             | cut -d" " -f6)
+-			        test "${verbose_start_type}" = DEFAULT \
+-			          && gcc_has_attribute_section_visible=yes \
+-			          || gcc_has_attribute_section_visible=no; }],
+-			[gcc_has_attribute_section_visible=no]
+-		)
+-		AX_RESTORE_FLAGS
+-		AC_MSG_RESULT($gcc_has_attribute_section_visible)
+-		rm -f "conftest${shrext_cmds}"
+-
+-		if test "x${gcc_has_attribute_section_visible}" = xno; then
+-			# check if the linker script based workaround is
+-			# feasible at all, otherwise fallback to using no
+-			# section attribute while making some noise about it
+-			# as combining with-without accustomed logging
+-			# participants is currently uncharted waters
+-			AC_MSG_CHECKING([whether linker workaround for orphan sections usable])
+-			>conftest.ld cat <<-EOF
+-			SECTIONS {
+-			  __verbose : {
+-			    __start___verbose = .;
+-			    *(__verbose);
+-			    __stop___verbose = .;
+-			  }
+-			}
+-			EOF
+-			LDFLAGS="${LDFLAGS} -Wl,conftest.ld"
+-			AC_LINK_IFELSE(
+-				[AC_LANG_PROGRAM(
+-				    [[#include <assert.h>
+-				      extern int __start___verbose[], __stop___verbose[];
+-				      int test(void);]],
+-				    [[static int my_var __attribute__((section("__verbose"))) = 5;
+-				      assert("E:non-empty data section"
+-				             && __start___verbose != __stop___verbose);
+-				      assert("E:no data section value loss"
+-				             && my_var == 5);]]
+-				)],
+-				[],
+-				[gcc_has_attribute_section=no]
+-			)
+-			AX_RESTORE_FLAGS
+-			AC_MSG_RESULT([$gcc_has_attribute_section])
+-			rm -f "conftest.ld"
+-		fi
+-
+-		if test "x${gcc_has_attribute_section}" = xyes; then
+-			AC_DEFINE([QB_HAVE_ATTRIBUTE_SECTION], 1,
+-				  [Enabling code using __attribute__((section))])
+-			AC_SUBST([client_dlopen_LIBS],[$dlopen_LIBS])
+-			if test "x${gcc_has_attribute_section_visible}" = xyes; then
+-				PACKAGE_FEATURES="$PACKAGE_FEATURES attribute-section"
+-			else
+-				AC_DEFINE([QB_NEED_ATTRIBUTE_SECTION_WORKAROUND], 1,
+-					  [Enabling code using __attribute__((section))])
+-				PACKAGE_FEATURES="$PACKAGE_FEATURES attribute-section-workaround"
+-			fi
+-		elif test "x${enable_nosection_fallback}" = xyes; then
+-			AC_MSG_NOTICE([Falling back to not using orphan section])
+-		else
+-			AC_MSG_ERROR([Would use section attribute, cannot; see --enable-nosection-fallback])
+-		fi
+-	fi
+-fi
+ AM_CONDITIONAL(HAVE_GCC_ATTRIBUTE_SECTION, [test "x${gcc_has_attribute_section}" = xyes])
+ AM_CONDITIONAL(NEED_GCC_ATTRIBUTE_SECTION_WORKAROUND,
+ 	       [test "x${gcc_has_attribute_section}" = xyes \
+diff -ur libqb-1.0.3/include/qb/qbconfig.h.in libqb-1.0.3.nosection/include/qb/qbconfig.h.in
+--- libqb-1.0.3/include/qb/qbconfig.h.in	2017-12-14 09:25:16.000000000 +0000
++++ libqb-1.0.3.nosection/include/qb/qbconfig.h.in	2018-08-16 10:23:15.018923879 +0100
+@@ -27,9 +27,6 @@
+ /* need atomic memory barrier */
+ #undef QB_ATOMIC_OP_MEMORY_BARRIER_NEEDED
+ 
+-/* Enabling code using __attribute__((section)) */
+-#undef QB_HAVE_ATTRIBUTE_SECTION
+-
+ /* versioning info: MAJOR, MINOR, MICRO, and REST components;
+    note that static compile-time info is not that useful as consulting
+    the respectively named members of qb_version struct constant under
+diff -ur libqb-1.0.3/include/qb/qblog.h libqb-1.0.3.nosection/include/qb/qblog.h
+--- libqb-1.0.3/include/qb/qblog.h	2017-12-21 09:02:11.000000000 +0000
++++ libqb-1.0.3.nosection/include/qb/qblog.h	2018-08-16 10:23:15.018923879 +0100
+@@ -39,15 +39,6 @@
+ #include <qb/qbutil.h>
+ #include <qb/qbconfig.h>
+ 
+-#if defined(QB_KILL_ATTRIBUTE_SECTION) || defined(S_SPLINT_S)
+-#undef QB_HAVE_ATTRIBUTE_SECTION
+-#endif  /* defined(QB_KILL_ATTRIBUTE_SECTION) || defined(S_SPLINT_S) */
+-
+-#ifdef QB_HAVE_ATTRIBUTE_SECTION
+-#include <assert.h>  /* possibly needed for QB_LOG_INIT_DATA */
+-#include <dlfcn.h>  /* dynamic linking: dlopen, dlsym, dladdr, ... */
+-#endif
+-
+ /**
+  * @file qblog.h
+  * The logging API provides four main parts (basics, filtering, threading & blackbox).
+@@ -286,119 +277,7 @@
+ 
+ typedef void (*qb_log_filter_fn)(struct qb_log_callsite * cs);
+ 
+-/* will be assigned by linker magic (assuming linker supports that):
+- * https://sourceware.org/binutils/docs/ld/Orphan-Sections.html
+- */
+-#ifdef QB_HAVE_ATTRIBUTE_SECTION
+-
+-#define QB_ATTR_SECTION			__verbose  /* conforms to C ident. */
+-#define QB_ATTR_SECTION_STR		QB_PP_STRINGIFY(QB_ATTR_SECTION)
+-#define QB_ATTR_SECTION_START		QB_PP_JOIN(__start_, QB_ATTR_SECTION)
+-#define QB_ATTR_SECTION_STOP		QB_PP_JOIN(__stop_, QB_ATTR_SECTION)
+-#define QB_ATTR_SECTION_START_STR	QB_PP_STRINGIFY(QB_ATTR_SECTION_START)
+-#define QB_ATTR_SECTION_STOP_STR	QB_PP_STRINGIFY(QB_ATTR_SECTION_STOP)
+-
+-extern struct qb_log_callsite QB_ATTR_SECTION_START[];
+-extern struct qb_log_callsite QB_ATTR_SECTION_STOP[];
+-
+-/* Related to the next macro that is -- unlike this one -- a public API */
+-#ifndef _GNU_SOURCE
+-#define QB_NONAPI_LOG_INIT_DATA_EXTRA_(name)				\
+-	_Pragma(QB_PP_STRINGIFY(GCC warning QB_PP_STRINGIFY(		\
+-	        without "_GNU_SOURCE" defined (directly or not) 	\
+-		QB_LOG_INIT_DATA cannot check sanity of libqb proper	\
+-		nor of the target site originating this check alone)))
+-#else
+-#define QB_NONAPI_LOG_INIT_DATA_EXTRA_(name)				\
+-    { Dl_info work_dli;							\
+-    /* libqb sanity (locating libqb by it's relatively unique		\
+-       non-functional symbols -- the two are mutually exclusive, the	\
+-       ordinarily latter was introduced by accident, the former is	\
+-       intentional -- due to possible confusion otherwise) */		\
+-    if ((dladdr(dlsym(RTLD_DEFAULT, "qb_ver_str"), &work_dli)		\
+-         || dladdr(dlsym(RTLD_DEFAULT, "facilitynames"), &work_dli))	\
+-        && (work_handle = dlopen(work_dli.dli_fname,			\
+-                                 RTLD_LOCAL|RTLD_LAZY)) != NULL) {	\
+-        work_s1 = (struct qb_log_callsite *)				\
+-                  dlsym(work_handle, QB_ATTR_SECTION_START_STR);	\
+-        work_s2 = (struct qb_log_callsite *)				\
+-                  dlsym(work_handle, QB_ATTR_SECTION_STOP_STR);		\
+-        assert("libqb's callsite section is observable, otherwise \
+-libqb's build is at fault, preventing reliable logging"			\
+-               && work_s1 != NULL && work_s2 != NULL);			\
+-        assert("libqb's callsite section is populated, otherwise \
+-libqb's build is at fault, preventing reliable logging"			\
+-               && work_s1 != work_s2);					\
+-        dlclose(work_handle); }						\
+-    /* sanity of the target site originating this check alone */	\
+-    if (dladdr(dlsym(RTLD_DEFAULT, QB_PP_STRINGIFY(name)), &work_dli)	\
+-        && (work_handle = dlopen(work_dli.dli_fname,			\
+-                                 RTLD_LOCAL|RTLD_LAZY)) != NULL) {	\
+-        work_s1 = (struct qb_log_callsite *)				\
+-                  dlsym(work_handle, QB_ATTR_SECTION_START_STR);	\
+-        work_s2 = (struct qb_log_callsite *)				\
+-                  dlsym(work_handle, QB_ATTR_SECTION_STOP_STR);		\
+-        assert("target's own callsite section observable, otherwise \
+-target's own linkage at fault and logging would not work reliably \
+-(unless QB_LOG_INIT_DATA macro used unexpectedly in no-logging context)"\
+-               && work_s1 != NULL && work_s2 != NULL);			\
+-        assert("target's own callsite section non-empty, otherwise \
+-target's own linkage at fault and logging would not work reliably \
+-(unless QB_LOG_INIT_DATA macro used unexpectedly in no-logging context)"\
+-               && work_s1 != work_s2);					\
+-        dlclose(work_handle); } }
+-#endif  /* _GNU_SOURCE */
+-
+-/**
+- * Optional on-demand self-check of 1/ toolchain sanity (prerequisite for
+- * the logging subsystem to work properly) and 2/ non-void active use of
+- * logging (satisfied with a justifying existence of a logging callsite as
+- * defined with a @c qb_logt invocation) at the target (but see below), which
+- * is supposedly assured by it's author(!) as of relying on this very macro
+- * [technically, the symbols that happen to be resolved under the respective
+- * identifiers do not necessarily originate in the same compilation unit as
+- * when it's not the end executable (or by induction, a library positioned
+- * earlier in the symbol lookup order) but a shared library, the former takes
+- * a precedence unless that site comes short of exercising the logging,
+- * making its callsite section empty and, in turn, without such boundary
+- * symbols, hence making the resolution continue further in the lookup order
+- * -- despite fuzzily targeted attestation, the check remains reasonable];
+- * only effective when link-time ("run-time amortizing") callsite collection
+- * is;  as a side effect, it can ensure the boundary-denoting symbols for the
+- * target collection area are kept alive with some otherwise unkind linkers.
+- *
+- * Applying this macro in the target program/library is strongly recommended
+- * whenever the logging as framed by this header file is in use.
+- * Moreover, it's important to state that using this check while not ensuring
+- * @c _GNU_SOURCE macro definition is present at compile-time means only half
+- * of the available sanity checking will be performed, possibly resulting
+- * in libqb's own internally logged messages being lost without warning.
+- */
+-#define QB_LOG_INIT_DATA(name)						\
+-    void name(void);							\
+-    void name(void) {							\
+-    void *work_handle; struct qb_log_callsite *work_s1, *work_s2;	\
+-    /* our own (target's) sanity, or possibly that of higher priority	\
+-       symbol resolution site (unless target equals end executable)	\
+-       or even the lower one if no such predecessor defines these */	\
+-    if ((work_handle = dlopen(NULL, RTLD_LOCAL|RTLD_LAZY)) != NULL) {	\
+-        work_s1 = (struct qb_log_callsite *)				\
+-                  dlsym(work_handle, QB_ATTR_SECTION_START_STR);	\
+-        work_s2 = (struct qb_log_callsite *)				\
+-                  dlsym(work_handle, QB_ATTR_SECTION_STOP_STR);		\
+-        assert("implicit callsite section is observable, otherwise \
+-target's and/or libqb's build is at fault, preventing reliable logging" \
+-               && work_s1 != NULL && work_s2 != NULL);			\
+-        dlclose(work_handle);  /* perhaps overly eager thing to do */ }	\
+-    QB_NONAPI_LOG_INIT_DATA_EXTRA_(name);				\
+-    /* finally, original, straightforward check */			\
+-    assert("implicit callsite section is populated, otherwise \
+-target's build is at fault, preventing reliable logging"		\
+-           && QB_ATTR_SECTION_START != QB_ATTR_SECTION_STOP); }		\
+-    void __attribute__ ((constructor)) name(void);
+-#else
+ #define QB_LOG_INIT_DATA(name)
+-#endif  /* QB_HAVE_ATTRIBUTE_SECTION */
+ 
+ /**
+  * Internal function: use qb_log() or qb_logt()
+@@ -476,21 +355,12 @@
+  * @param fmt usual printf style format specifiers
+  * @param args usual printf style args
+  */
+-#ifdef QB_HAVE_ATTRIBUTE_SECTION
+-#define qb_logt(priority, tags, fmt, args...) do {			\
+-	static struct qb_log_callsite descriptor			\
+-	__attribute__((section(QB_ATTR_SECTION_STR), aligned(8))) =	\
+-	{ __func__, __FILE__, fmt, priority, __LINE__, 0, tags };	\
+-	qb_log_real_(&descriptor, ##args);				\
+-    } while(0)
+-#else
+ #define qb_logt(priority, tags, fmt, args...) do {	\
+ 	struct qb_log_callsite* descriptor_pt =		\
+ 	qb_log_callsite_get(__func__, __FILE__, fmt,	\
+ 			    priority, __LINE__, tags);	\
+ 	qb_log_real_(descriptor_pt, ##args);		\
+     } while(0)
+-#endif /* QB_HAVE_ATTRIBUTE_SECTION */
+ 
+ 
+ /**
+--- libqb-1.0.3/lib/libqb.pc.in	2017-12-14 09:25:16.000000000 +0000
++++ libqb-1.0.3.nosection/lib/libqb.pc.in	2018-08-16 10:23:15.019923883 +0100
+@@ -7,17 +7,6 @@
+ Version: @PACKAGE_VERSION@
+ Description: libqb
+ Requires:
+-Libs: -L${libdir} -lqb @client_dlopen_LIBS@
+-# NOTE: If -lqb not usable for linking (e.g. linker not compatible with
+-#       linker scripts ad-hoc modifying output sections), try recent
+-#       ld.bfd/binutils linker first when available, otherwise you can
+-#       try "-l:libqb.so.<digit>" link switch that bypasses said linker
+-#       script -- but beware, logging may be less efficient and may lack
+-#       possible future optimizations and extra features.  Consequently,
+-#       logging issues (typically bound to QB_LOG_INIT_DATA macro) can be
+-#       mitigated with QB_KILL_ATTRIBUTE_SECTION macro defined for a build.
+-# NOTE: when concerned about a warning coming from the build process like
+-#       warning: [...]libqb.so contains output sections; did you forget -T?
+-#       and the build finishes OK, take it merely as a harmless side-effect
++Libs: -L${libdir} -lqb
+ Libs.private: @LIBS@
+ Cflags: -I${includedir}
+diff -ur libqb-1.0.3/lib/log.c libqb-1.0.3.nosection/lib/log.c
+--- libqb-1.0.3/lib/log.c	2017-12-21 09:02:11.000000000 +0000
++++ libqb-1.0.3.nosection/lib/log.c	2018-08-16 10:26:01.465514061 +0100
+@@ -40,13 +40,6 @@
+ #include "util_int.h"
+ #include <regex.h>
+ 
+-#if defined(QB_NEED_ATTRIBUTE_SECTION_WORKAROUND) && !defined(S_SPLINT_S)
+-/* following only needed to force these symbols be global
+-   with ld 2.29: https://bugzilla.redhat.com/1477354 */
+-struct qb_log_callsite __attribute__((weak)) QB_ATTR_SECTION_START[] = { {0} };
+-struct qb_log_callsite __attribute__((weak)) QB_ATTR_SECTION_STOP[] = { {0} };
+-#endif
+-
+ static struct qb_log_target conf[QB_LOG_TARGET_MAX];
+ static uint32_t conf_active_max = 0;
+ static int32_t in_logger = QB_FALSE;
+@@ -772,73 +765,6 @@
+ 	return qb_log_filter_ctl2(t, c, type, text, LOG_EMERG, priority);
+ }
+ 
+-#ifdef QB_HAVE_ATTRIBUTE_SECTION
+-/* Some platforms (eg. FreeBSD 10+) don't support calling dlopen() from
+- * within a dl_iterate_phdr() callback; so save all of the dlpi_names to
+- * a list and iterate over them afterwards. */
+-static int32_t
+-_log_so_walk_callback(struct dl_phdr_info *info, size_t size, void *data)
+-{
+-	struct dlname *dlname;
+-
+-	if (strlen(info->dlpi_name) > 0) {
+-		dlname = calloc(1, sizeof(struct dlname));
+-		if (!dlname)
+-			return 0;
+-		dlname->dln_name = strdup(info->dlpi_name);
+-		qb_list_add_tail(&dlname->list, &dlnames);
+-	}
+-
+-	return 0;
+-}
+-
+-static void
+-_log_so_walk_dlnames(void)
+-{
+-	struct dlname *dlname;
+-	struct qb_list_head *iter;
+-	struct qb_list_head *next;
+-
+-	void *handle;
+-	void *start;
+-	void *stop;
+-	const char *error;
+-
+-	qb_list_for_each_safe(iter, next, &dlnames) {
+-		dlname = qb_list_entry(iter, struct dlname, list);
+-
+-		handle = dlopen(dlname->dln_name, RTLD_LAZY);
+-		error = dlerror();
+-		if (!handle || error) {
+-			qb_log(LOG_ERR, "%s", error);
+-			goto done;
+-		}
+-
+-		start = dlsym(handle, QB_ATTR_SECTION_START_STR);
+-		error = dlerror();
+-		if (error) {
+-			goto done;
+-		}
+-
+-		stop = dlsym(handle, QB_ATTR_SECTION_STOP_STR);
+-		error = dlerror();
+-		if (error) {
+-			goto done;
+-
+-		} else {
+-			qb_log_callsites_register(start, stop);
+-		}
+-done:
+-		if (handle)
+-			dlclose(handle);
+-		qb_list_del(iter);
+-		if (dlname->dln_name)
+-			free(dlname->dln_name);
+-		free(dlname);
+-	}
+-}
+-#endif /* QB_HAVE_ATTRIBUTE_SECTION */
+-
+ static void
+ _log_target_state_set(struct qb_log_target *t, enum qb_log_target_state s)
+ {
+@@ -864,10 +790,6 @@
+ {
+ 	int32_t l;
+ 	enum qb_log_target_slot i;
+-#ifdef QB_HAVE_ATTRIBUTE_SECTION
+-	void *work_handle; struct qb_log_callsite *work_s1, *work_s2;
+-	Dl_info work_dli;
+-#endif /* QB_HAVE_ATTRIBUTE_SECTION */
+ 	/* cannot reuse single qb_log invocation in various contexts
+ 	   through the variables (when section attribute in use),
+ 	   hence this indirection */
+@@ -893,33 +815,6 @@
+ 	}
+ 
+ 	qb_log_dcs_init();
+-#ifdef QB_HAVE_ATTRIBUTE_SECTION
+-	/* sanity check that target chain supplied QB_ATTR_SECTION_ST{ART,OP}
+-	   symbols and hence the local references to them are not referencing
+-	   the proper libqb's ones (locating libqb by it's relatively unique
+-	   non-functional symbols -- the two are mutually exclusive, the
+-	   ordinarily latter was introduced by accident, the former is
+-	   intentional -- due to possible confusion otherwise) */
+-	if ((dladdr(dlsym(RTLD_DEFAULT, "qb_ver_str"), &work_dli)
+-	     || dladdr(dlsym(RTLD_DEFAULT, "facilitynames"), &work_dli))
+-	    && (work_handle = dlopen(work_dli.dli_fname,
+-	                             RTLD_LOCAL|RTLD_LAZY)) != NULL) {
+-		work_s1 = (struct qb_log_callsite *)
+-		          dlsym(work_handle, QB_ATTR_SECTION_START_STR);
+-		work_s2 = (struct qb_log_callsite *)
+-		          dlsym(work_handle, QB_ATTR_SECTION_STOP_STR);
+-		if (work_s1 == QB_ATTR_SECTION_START
+-		    || work_s2 == QB_ATTR_SECTION_STOP) {
+-			preinit_err = preinit_err_target_sec;
+-		} else if (work_s1 == work_s2) {
+-			preinit_err = preinit_err_target_empty;
+-		}
+-		dlclose(work_handle);  /* perhaps overly eager thing to do */
+-	}
+-	qb_log_callsites_register(QB_ATTR_SECTION_START, QB_ATTR_SECTION_STOP);
+-	dl_iterate_phdr(_log_so_walk_callback, NULL);
+-	_log_so_walk_dlnames();
+-#endif /* QB_HAVE_ATTRIBUTE_SECTION */
+ 
+ 	for (i = QB_LOG_TARGET_STATIC_START; i < QB_LOG_TARGET_STATIC_MAX; i++)
+ 		conf[i].state = QB_LOG_STATE_DISABLED;
+diff -ur libqb-1.0.3/lib/Makefile.am libqb-1.0.3.nosection/lib/Makefile.am
+--- libqb-1.0.3/lib/Makefile.am	2017-12-14 09:25:16.000000000 +0000
++++ libqb-1.0.3.nosection/lib/Makefile.am	2018-08-16 10:25:07.001321422 +0100
+@@ -79,9 +79,6 @@
+ libqb_la_SOURCES	= $(source_to_lint) unix.c
+ libqb_la_CFLAGS		= $(PTHREAD_CFLAGS)
+ libqb_la_LIBADD		= $(LTLIBOBJS) $(dlopen_LIBS) $(PTHREAD_LIBS) $(socket_LIBS)
+-if NEED_GCC_ATTRIBUTE_SECTION_WORKAROUND
+-libqb_la_LIBADD 	+= qblog_script.la
+-endif
+ 
+ AM_LDFLAGS 	= $(LDFLAGS_COPY:-Bsymbolic-functions=)
+ 
+@@ -110,33 +107,6 @@
+ pkgconfigexecdir = $(libdir)/pkgconfig
+ pkgconfigexec_DATA = libqb.pc
+ 
+-# find the libqb.so symlink's target, if so, try to find out, iteratively,
+-# its gradually shorter forms that likewise symlinks the same target as the
+-# original libqb.so path, point to that file from the linker script using
+-# qblog_script.ld as a template, storing result in place of original libqb.so
+-# (e.g., libqb.so := "INPUT(libqb.so.0) " [...] "SECTIONS { " [...] "}")
+-# NOTE: readlink nor realpath are POSIX; not chained links ready
+-# NOTE: conservative check, i.e., not per NEED_GCC_ATTRIBUTE_SECTION_WORKAROUND
+-if HAVE_GCC_ATTRIBUTE_SECTION
+-install-exec-hook: qblog_script.ld
+-	target=$$(ls -l "$(DESTDIR)$(libdir)/libqb.so" || :); \
+-	  target=$${target#* -> }; t1_bn=$$(basename "$${target}" || :); \
+-	  while test -n "$${t1_bn}"; do t2_bn=$${t1_bn%.*[0-9]*}; \
+-	  test "$${t2_bn}" != libqb.so || break; \
+-	  test -L "$${t2_bn}" || { t1_bn=$${t2_bn}; continue; }; \
+-	  t2_target=$$(ls -l "$${t2_bn}" || break); t2_target=$${t2_target#* -> }; \
+-	  test "$${t2_target}" = "$${target}" || break; \
+-	  t1_bn=$${t2_bn}; done; test -n "$${t1_bn}" || \
+-	  { echo "only applicable to SO symlink scheme"; exit 1; }; \
+-	  echo "$${t1_bn}" > "$(DESTDIR)$(libdir)/libqb.so-t"
+-	so_ver=$$(cat "$(DESTDIR)$(libdir)/libqb.so-t"); \
+-	  echo "INPUT($${so_ver})" > "$(DESTDIR)$(libdir)/libqb.so-t"; \
+-	  cat $< >> "$(DESTDIR)$(libdir)/libqb.so-t"; \
+-	  sed -i -- "s/libqb.so.<digit>/$${so_ver}/" \
+-	    "$(DESTDIR)$(libdir)/libqb.so-t" "$(DESTDIR)$(pkgconfigexecdir)/libqb.pc"
+-	mv -f "$(DESTDIR)$(libdir)/libqb.so-t" "$(DESTDIR)$(libdir)/libqb.so"
+-endif
+-
+ if HAVE_SPLINT
+ check_SCRIPTS = run_splint.sh
+ TESTS = $(check_SCRIPTS)
